@@ -41,6 +41,13 @@ export async function POST(req: Request) {
     );
   }
 
+  // Block reserved / privileged username variants (case-insensitive).
+  const RESERVED_NAMES = /^(admin|administrator|system|root|moderator|superuser|sysadmin|support|helpdesk|security|ops|devops|internal|service|daemon|healthcheck|monitoring|next_internal)$/i;
+  if (RESERVED_NAMES.test(username)) {
+    logEvent({ req, route, status: 409, actor: username });
+    return NextResponse.json({ error: "username taken" }, { status: 409 });
+  }
+
   const ip = requestIP(req);
   const key = requestKey(req, username);
 
