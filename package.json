@@ -1,0 +1,30 @@
+{
+  "name": "the-infrastructure-strikes-back-starter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Synthetic, naive, intentionally under-defended web app for a live adversarial engineering event. NOT production.",
+  "license": "SEE LICENSE IN LICENSE",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "node --test 'tests/smoke/*.mjs'",
+    "test:smoke": "node --test 'tests/smoke/*.mjs'",
+    "test:functional": "node --test 'tests/functional/*.mjs'"
+  },
+  "dependencies": {
+    "@vercel/analytics": "2.0.1",
+    "next": "14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.12.12",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "typescript": "5.4.5"
+  },
+  "engines": {
+    "node": "20.x"
+  }
+}
