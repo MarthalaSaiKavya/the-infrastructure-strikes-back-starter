@@ -3,8 +3,8 @@ import { logEvent } from "@/lib/telemetry";
 import { getStore } from "@/lib/store";
 import { sessionFromRequest } from "@/src/auth";
 import {
-  fingerprint, trackFrequency, flagActor, isFlagged,
-  requestKey, tarpit, fakeActionList,
+  isKnownAttacker, fingerprint, trackFrequency, flagActor, isFlagged,
+  requestKey, requestIP, tarpit, fakeActionList,
 } from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +19,16 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
 
+  const ip = requestIP(req);
   const key = requestKey(req, session.identity);
+
+  // STATELESS: immediately serve fake list to known attack actor patterns.
+  if (isKnownAttacker(session.identity)) {
+    flagActor(key, `known attack actor: ${session.identity}`);
+    logEvent({ req, route, status: 200, actor: `[DECEPTION] ${session.identity}` });
+    await tarpit();
+    return NextResponse.json(fakeActionList());
+  }
 
   // Fingerprint and frequency checks.
   const { score, reasons } = fingerprint(req);
@@ -31,7 +40,7 @@ export async function GET(req: Request) {
   }
 
   // Serve fake list to flagged traffic.
-  if (isFlagged(key)) {
+  if (isFlagged(key) || isFlagged(ip)) {
     logEvent({ req, route, status: 200, actor: `[DECEPTION] ${session.identity}` });
     await tarpit();
     return NextResponse.json(fakeActionList());

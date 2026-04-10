@@ -4,8 +4,8 @@ import { getStore } from "@/lib/store";
 import { sessionFromRequest } from "@/src/auth";
 import { isActionOwner } from "@/src/api";
 import {
-  isCanary, isFlagged, flagActor, requestKey, requestIP,
-  tarpit, fakeActionList, trackEnumeration, trackSwarm,
+  isKnownAttacker, isCanary, isFlagged, flagActor, requestKey, requestIP,
+  tarpit, fakeActionList, trackEnumeration, trackSwarm, issueCanary,
 } from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
@@ -22,6 +22,14 @@ export async function GET(req: Request, context: { params: { id: string } }) {
   const id = context.params.id;
   const ip = requestIP(req);
   const key = requestKey(req, session.identity);
+
+  // STATELESS: immediately serve deception to known attack actor patterns.
+  if (isKnownAttacker(session.identity)) {
+    flagActor(key, `known attack actor: ${session.identity}`);
+    logEvent({ req, route, status: 200, actor: `[DECEPTION] ${session.identity}` });
+    await tarpit();
+    return NextResponse.json(issueCanary(session.identity));
+  }
 
   // Bot swarm detection: multiple distinct actors from the same IP.
   if (trackSwarm(ip, session.identity)) {
@@ -48,7 +56,7 @@ export async function GET(req: Request, context: { params: { id: string } }) {
   }
 
   // Serve deception to already-flagged traffic.
-  if (isFlagged(key)) {
+  if (isFlagged(key) || isFlagged(ip)) {
     logEvent({ req, route, status: 200, actor: `[DECEPTION] ${session.identity}` });
     await tarpit();
     const fake = (fakeActionList() as { actions: object[] }).actions[0];
