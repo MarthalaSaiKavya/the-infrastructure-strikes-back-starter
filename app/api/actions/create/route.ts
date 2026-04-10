@@ -3,24 +3,68 @@ import { randomBytes } from "node:crypto";
 import { logEvent } from "@/lib/telemetry";
 import { getStore } from "@/lib/store";
 import { sessionFromRequest } from "@/src/auth";
+import {
+  fingerprint, trackFrequency, trackSwarm, flagActor, isFlagged,
+  requestKey, requestIP, tarpit, issueCanary, looksLikeSQLInjection,
+} from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
 
+// Per-user rate limit: max 20 action creations per minute.
+const RATE_LIMIT = 20;
+const RATE_WINDOW_MS = 60 * 1000;
+const createAttempts = new Map<string, { count: number; firstAt: number }>();
+
 // POST /api/actions/create
-// Body: { title: string, body: string }
-//
-// SEEDED FLAWS:
-//  - "Verbose internal error leakage": the catch block returns the raw
-//    error message, stack, and a dump of the request body for
-//    "debuggability". Attackers can learn internals by forcing errors.
-//  - "No action creation rate limit": no per-user or global limit. A
-//    client can spam create as fast as it can send.
 export async function POST(req: Request) {
   const route = "/api/actions/create";
   const session = sessionFromRequest(req);
   if (!session) {
     logEvent({ req, route, status: 401, actor: null });
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  }
+
+  const ip = requestIP(req);
+  const key = requestKey(req, session.identity);
+
+  // Bot swarm detection.
+  if (trackSwarm(ip, session.identity)) {
+    flagActor(ip, "bot swarm: multiple actors from same IP");
+    flagActor(key, `part of bot swarm from ${ip}`);
+    logEvent({ req, route, status: 429, actor: `[SWARM] ${session.identity}` });
+    await tarpit();
+    return NextResponse.json({ error: "too many requests" }, { status: 429 });
+  }
+
+  // Fingerprint: flag suspicious clients.
+  const { score, reasons } = fingerprint(req);
+  if (score >= 40) {
+    flagActor(key, `fingerprint score ${score}: ${reasons.join(", ")}`);
+  }
+
+  // Frequency: flag high-volume callers.
+  if (trackFrequency(key)) {
+    flagActor(key, "high request frequency on create");
+  }
+
+  // Serve deception to flagged traffic — tarpit then return canary token.
+  if (isFlagged(key)) {
+    logEvent({ req, route, status: 201, actor: `[DECEPTION] ${session.identity}` });
+    await tarpit();
+    return NextResponse.json(issueCanary(session.identity), { status: 201 });
+  }
+
+  // Rate limit per user.
+  const now = Date.now();
+  const bucket = createAttempts.get(session.userId);
+  if (bucket && now - bucket.firstAt < RATE_WINDOW_MS) {
+    if (bucket.count >= RATE_LIMIT) {
+      logEvent({ req, route, status: 429, actor: session.identity });
+      return NextResponse.json({ error: "too many requests" }, { status: 429 });
+    }
+    bucket.count += 1;
+  } else {
+    createAttempts.set(session.userId, { count: 1, firstAt: now });
   }
 
   let rawBody: unknown;
@@ -30,6 +74,15 @@ export async function POST(req: Request) {
 
     const title = String(body.title ?? "").trim();
     const content = String(body.body ?? "").trim();
+
+    // SQL injection probe detection in payload.
+    if (looksLikeSQLInjection(title) || looksLikeSQLInjection(content)) {
+      flagActor(key, "SQL injection probe in action payload");
+      logEvent({ req, route, status: 400, actor: `[SQLI_PROBE] ${session.identity}` });
+      await tarpit();
+      return NextResponse.json({ error: "invalid input" }, { status: 400 });
+    }
+
     if (!title) throw new Error("title is required");
     if (title.length > 200) throw new Error("title too long (max 200)");
 
@@ -46,17 +99,7 @@ export async function POST(req: Request) {
     logEvent({ req, route, status: 201, actor: session.identity });
     return NextResponse.json(action, { status: 201 });
   } catch (e) {
-    const err = e as Error;
     logEvent({ req, route, status: 500, actor: session.identity });
-    // SEEDED FLAW: verbose internal error leakage.
-    return NextResponse.json(
-      {
-        error: "internal",
-        message: err.message,
-        stack: err.stack,
-        received: rawBody,
-      },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "internal" }, { status: 500 });
   }
 }
