@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { logEvent } from "@/lib/telemetry";
 import { getStore } from "@/lib/store";
 import { sessionFromRequest } from "@/src/auth";
+import {
+  fingerprint, trackFrequency, flagActor, isFlagged,
+  requestKey, tarpit, fakeActionList,
+} from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +17,24 @@ export async function GET(req: Request) {
   if (!session) {
     logEvent({ req, route, status: 401, actor: null });
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  }
+
+  const key = requestKey(req, session.identity);
+
+  // Fingerprint and frequency checks.
+  const { score, reasons } = fingerprint(req);
+  if (score >= 40) {
+    flagActor(key, `fingerprint score ${score}: ${reasons.join(", ")}`);
+  }
+  if (trackFrequency(key)) {
+    flagActor(key, "high request frequency on list");
+  }
+
+  // Serve fake list to flagged traffic.
+  if (isFlagged(key)) {
+    logEvent({ req, route, status: 200, actor: `[DECEPTION] ${session.identity}` });
+    await tarpit();
+    return NextResponse.json(fakeActionList());
   }
 
   const store = getStore();
