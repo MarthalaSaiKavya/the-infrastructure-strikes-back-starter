@@ -75,6 +75,11 @@ export function looksLikeBotUsername(username: string): boolean {
     if (username.length > 8 && digits / username.length > 0.6) return true;
     // Very long (>32 chars) and contains digits = almost certainly generated
     if (username.length > 32 && /\d/.test(username)) return true;
+    // Contains attack-tool substring patterns regardless of prefix/suffix
+    // e.g. b3probe_6554000, probea_72e099, idtest_NNNNN, basic_NNNNN
+    const lower = username.toLowerCase();
+    if (/probe_/.test(lower)) return true;
+    if (/^(idtest|basic|testid|loadtest|scantest)_/.test(lower)) return true;
   } catch { /* ignore */ }
   return false;
 }
