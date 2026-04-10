@@ -50,9 +50,14 @@ export async function POST(req: Request) {
   }
 
   // Block reserved / privileged username variants (case-insensitive).
+  // Flag + tarpit the caller — repeated probes (e.g. hammering "admin") get slowed down.
   const RESERVED_NAMES = /^(admin|administrator|system|root|moderator|superuser|sysadmin|support|helpdesk|security|ops|devops|internal|service|daemon|healthcheck|monitoring|next_internal)$/i;
   if (RESERVED_NAMES.test(username)) {
-    logEvent({ req, route, status: 409, actor: username });
+    const probeKey = requestKey(req, username);
+    flagActor(probeKey, `reserved username probe: ${username}`);
+    flagActor(ip, `reserved username probe from IP: ${username}`);
+    logEvent({ req, route, status: 409, actor: `[RESERVED_PROBE] ${username}` });
+    if (isFlagged(probeKey) || isFlagged(ip)) await tarpit();
     return NextResponse.json({ error: "username taken" }, { status: 409 });
   }
 
