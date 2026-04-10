@@ -6,21 +6,32 @@ import { sessionFromRequest } from "@/src/auth";
 
 export const dynamic = "force-dynamic";
 
+// Per-user rate limit: max 20 action creations per minute.
+const RATE_LIMIT = 20;
+const RATE_WINDOW_MS = 60 * 1000;
+const createAttempts = new Map<string, { count: number; firstAt: number }>();
+
 // POST /api/actions/create
 // Body: { title: string, body: string }
-//
-// SEEDED FLAWS:
-//  - "Verbose internal error leakage": the catch block returns the raw
-//    error message, stack, and a dump of the request body for
-//    "debuggability". Attackers can learn internals by forcing errors.
-//  - "No action creation rate limit": no per-user or global limit. A
-//    client can spam create as fast as it can send.
 export async function POST(req: Request) {
   const route = "/api/actions/create";
   const session = sessionFromRequest(req);
   if (!session) {
     logEvent({ req, route, status: 401, actor: null });
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  }
+
+  // Rate limit per user.
+  const now = Date.now();
+  const bucket = createAttempts.get(session.userId);
+  if (bucket && now - bucket.firstAt < RATE_WINDOW_MS) {
+    if (bucket.count >= RATE_LIMIT) {
+      logEvent({ req, route, status: 429, actor: session.identity });
+      return NextResponse.json({ error: "too many requests" }, { status: 429 });
+    }
+    bucket.count += 1;
+  } else {
+    createAttempts.set(session.userId, { count: 1, firstAt: now });
   }
 
   let rawBody: unknown;
@@ -46,17 +57,7 @@ export async function POST(req: Request) {
     logEvent({ req, route, status: 201, actor: session.identity });
     return NextResponse.json(action, { status: 201 });
   } catch (e) {
-    const err = e as Error;
     logEvent({ req, route, status: 500, actor: session.identity });
-    // SEEDED FLAW: verbose internal error leakage.
-    return NextResponse.json(
-      {
-        error: "internal",
-        message: err.message,
-        stack: err.stack,
-        received: rawBody,
-      },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "internal" }, { status: 500 });
   }
 }
