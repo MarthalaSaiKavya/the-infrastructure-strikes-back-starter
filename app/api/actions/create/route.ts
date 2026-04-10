@@ -3,6 +3,10 @@ import { randomBytes } from "node:crypto";
 import { logEvent } from "@/lib/telemetry";
 import { getStore } from "@/lib/store";
 import { sessionFromRequest } from "@/src/auth";
+import {
+  fingerprint, trackFrequency, trackSwarm, flagActor, isFlagged,
+  requestKey, requestIP, tarpit, issueCanary, looksLikeSQLInjection,
+} from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +45,15 @@ export async function POST(req: Request) {
 
     const title = String(body.title ?? "").trim();
     const content = String(body.body ?? "").trim();
+
+    // SQL injection probe detection in payload.
+    if (looksLikeSQLInjection(title) || looksLikeSQLInjection(content)) {
+      flagActor(key, "SQL injection probe in action payload");
+      logEvent({ req, route, status: 400, actor: `[SQLI_PROBE] ${session.identity}` });
+      await tarpit();
+      return NextResponse.json({ error: "invalid input" }, { status: 400 });
+    }
+
     if (!title) throw new Error("title is required");
     if (title.length > 200) throw new Error("title too long (max 200)");
 

@@ -3,15 +3,14 @@ import { logEvent } from "@/lib/telemetry";
 import { getStore } from "@/lib/store";
 import { sessionFromRequest } from "@/src/auth";
 import { isActionOwner } from "@/src/api";
+import {
+  isCanary, isFlagged, flagActor, requestKey, requestIP,
+  tarpit, fakeActionList, trackEnumeration, trackSwarm,
+} from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/actions/[id]
-// Returns a single action if the caller is its owner.
-//
-// Ownership is checked via src/api/ownership.ts — see the seeded flaw
-// there. This handler looks correct on the surface but trusts a
-// caller-controlled identifier for the ownership comparison.
 export async function GET(req: Request, context: { params: { id: string } }) {
   const route = "/api/actions/[id]";
   const session = sessionFromRequest(req);
@@ -21,9 +20,50 @@ export async function GET(req: Request, context: { params: { id: string } }) {
   }
 
   const id = context.params.id;
+  const ip = requestIP(req);
+  const key = requestKey(req, session.identity);
+
+  // Bot swarm detection: multiple distinct actors from the same IP.
+  if (trackSwarm(ip, session.identity)) {
+    flagActor(ip, `bot swarm: multiple actors from same IP`);
+    flagActor(key, `part of bot swarm from ${ip}`);
+    logEvent({ req, route, status: 403, actor: `[SWARM] ${session.identity}` });
+    await tarpit();
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  // Canary token check — attacker stored and re-fetched a deception ID.
+  const canary = isCanary(id);
+  if (canary.hit) {
+    flagActor(key, `canary token retrieved (issued to ${canary.issuedTo})`);
+    logEvent({ req, route, status: 200, actor: `[CANARY_HIT] ${session.identity}` });
+    await tarpit();
+    return NextResponse.json({
+      id,
+      ownerId: session.userId,
+      title: "Shared Resource Access",
+      body: "Confidential — do not distribute",
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  // Serve deception to already-flagged traffic.
+  if (isFlagged(key)) {
+    logEvent({ req, route, status: 200, actor: `[DECEPTION] ${session.identity}` });
+    await tarpit();
+    const fake = (fakeActionList() as { actions: object[] }).actions[0];
+    return NextResponse.json(fake);
+  }
+
   const action = getStore().actions.get(id);
   if (!action) {
-    logEvent({ req, route, status: 404, actor: session.identity });
+    // Track enumeration — repeated 404s flag the caller.
+    if (trackEnumeration(key)) {
+      flagActor(key, "ID enumeration: repeated 404s on /api/actions/[id]");
+      logEvent({ req, route, status: 404, actor: `[ENUM] ${session.identity}` });
+    } else {
+      logEvent({ req, route, status: 404, actor: session.identity });
+    }
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
 
