@@ -3,8 +3,8 @@ import { logEvent } from "@/lib/telemetry";
 import { getStore } from "@/lib/store";
 import { sessionFromRequest } from "@/src/auth";
 import {
-  isKnownAttacker, fingerprint, flagActor, isFlagged,
-  requestKey, tarpit,
+  isKnownAttacker, looksLikeBotUsername, fingerprint, flagActor, isFlagged,
+  requestKey, requestIP, tarpit, freshSignupHittingSensitiveRoute,
 } from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
@@ -20,15 +20,16 @@ export async function GET(req: Request) {
   }
 
   const key = requestKey(req, session.identity);
+  const ip = requestIP(req);
 
-  if (isKnownAttacker(session.identity)) {
-    flagActor(key, `known attack actor: ${session.identity}`);
+  if (isKnownAttacker(session.identity) || looksLikeBotUsername(session.identity)) {
+    flagActor(key, `known/bot attack actor: ${session.identity}`);
     logEvent({ req, route, status: 404, actor: `[DECEPTION] ${session.identity}` });
     await tarpit();
     return NextResponse.json({ error: "user not found" }, { status: 404 });
   }
 
-  if (isFlagged(key)) {
+  if (isFlagged(key) || isFlagged(ip)) {
     logEvent({ req, route, status: 404, actor: `[DECEPTION] ${session.identity}` });
     await tarpit();
     return NextResponse.json({ error: "user not found" }, { status: 404 });
@@ -60,16 +61,25 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
 
+  const ip = requestIP(req);
   const key = requestKey(req, session.identity);
 
-  if (isKnownAttacker(session.identity)) {
-    flagActor(key, `known attack actor: ${session.identity}`);
+  if (isKnownAttacker(session.identity) || looksLikeBotUsername(session.identity)) {
+    flagActor(key, `known/bot attack actor: ${session.identity}`);
     logEvent({ req, route, status: 200, actor: `[DECEPTION] ${session.identity}` });
     await tarpit();
     return NextResponse.json({ ok: true });
   }
 
-  if (isFlagged(key)) {
+  // Sequential attack pattern: signup → profile update within 8s = bot.
+  if (freshSignupHittingSensitiveRoute(ip)) {
+    flagActor(key, "sequential bot: signup→profile within 8s");
+    logEvent({ req, route, status: 200, actor: `[DECEPTION:SEQ] ${session.identity}` });
+    await tarpit();
+    return NextResponse.json({ ok: true });
+  }
+
+  if (isFlagged(key) || isFlagged(ip)) {
     logEvent({ req, route, status: 200, actor: `[DECEPTION] ${session.identity}` });
     await tarpit();
     return NextResponse.json({ ok: true });

@@ -4,8 +4,8 @@ import { logEvent } from "@/lib/telemetry";
 import { getStore } from "@/lib/store";
 import { hashPassword } from "@/src/auth";
 import {
-  isKnownAttacker, fingerprint, trackFrequency, flagActor, isFlagged,
-  requestKey, requestIP, tarpit,
+  isKnownAttacker, looksLikeBotUsername, fingerprint, trackFrequency,
+  flagActor, isFlagged, requestKey, requestIP, tarpit, recordSignup,
 } from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
@@ -64,6 +64,14 @@ export async function POST(req: Request) {
   const ip = requestIP(req);
   const key = requestKey(req, username);
 
+  // STATELESS: block machine-generated usernames (timestamps, high digit ratio).
+  if (looksLikeBotUsername(username)) {
+    flagActor(key, `bot username heuristic: ${username}`);
+    logEvent({ req, route, status: 201, actor: `[DECEPTION:BOT] ${username}` });
+    await tarpit();
+    return NextResponse.json({ ok: true, id: "usr_" + randomBytes(6).toString("hex"), username, displayName: username });
+  }
+
   // STATELESS: block known attack actor usernames immediately.
   if (isKnownAttacker(username)) {
     flagActor(key, `known attack actor at signup: ${username}`);
@@ -119,6 +127,8 @@ export async function POST(req: Request) {
   store.users.set(id, user);
   store.usersByUsername.set(username, id);
 
+  // Record signup IP so sensitive routes can detect instant bot follow-through.
+  recordSignup(ip);
   logEvent({ req, route, status: 201, actor: username });
   return NextResponse.json({
     ok: true,

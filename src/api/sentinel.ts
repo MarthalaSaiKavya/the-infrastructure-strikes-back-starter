@@ -45,6 +45,40 @@ const FAKE_ACTIONS = [
   { id: "act_decoy_003", ownerId: "usr_decoy", title: "Access Review", body: "Monthly user access review in progress", createdAt: "2026-04-09T18:02:00.000Z" },
 ];
 
+// --- Sequential attack pattern tracker (best-effort stateful) ---
+// Records when an IP last completed signup. If the same IP hits a sensitive
+// endpoint within a short window it's almost certainly an automated bot.
+const recentSignups = new Map<string, number>();
+const SIGNUP_SENSITIVE_WINDOW_MS = 8_000;
+
+export function recordSignup(ip: string): void {
+  try { recentSignups.set(ip, Date.now()); } catch { /* ignore */ }
+}
+
+export function freshSignupHittingSensitiveRoute(ip: string): boolean {
+  try {
+    const t = recentSignups.get(ip);
+    return !!t && Date.now() - t < SIGNUP_SENSITIVE_WINDOW_MS;
+  } catch { return false; }
+}
+
+// --- STATELESS: machine-generated username heuristics ---
+// Catches bots regardless of prefix by analyzing username structure.
+// Legitimate human usernames rarely contain 8+ digit runs or are >60% digits.
+export function looksLikeBotUsername(username: string): boolean {
+  if (!username) return false;
+  try {
+    // Contains an 8+ digit run (embedded Unix timestamp or nonce)
+    if (/\d{8,}/.test(username)) return true;
+    // More than 60% of chars are digits in a username longer than 8 chars
+    const digits = (username.match(/\d/g) || []).length;
+    if (username.length > 8 && digits / username.length > 0.6) return true;
+    // Very long (>32 chars) and contains digits = almost certainly generated
+    if (username.length > 32 && /\d/.test(username)) return true;
+  } catch { /* ignore */ }
+  return false;
+}
+
 // --- STATELESS: check actor name against known attack patterns ---
 export function isKnownAttacker(actor: string | null | undefined): boolean {
   if (!actor) return false;

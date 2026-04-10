@@ -4,8 +4,8 @@ import { getStore } from "@/lib/store";
 import { hashPassword } from "@/src/auth";
 import { RESET_TOKEN_TTL_MS, generateResetToken } from "@/src/identity";
 import {
-  isKnownAttacker, trackFrequency, flagActor, isFlagged,
-  requestKey, requestIP, tarpit,
+  isKnownAttacker, looksLikeBotUsername, trackFrequency, flagActor, isFlagged,
+  requestKey, requestIP, tarpit, freshSignupHittingSensitiveRoute,
 } from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +29,22 @@ export async function POST(req: Request) {
   const ip = requestIP(req);
   const ipKey = requestKey(req);
   const username = (body.username || "").trim();
+
+  // STATELESS: block machine-generated usernames.
+  if (username && looksLikeBotUsername(username)) {
+    flagActor(requestKey(req, username), `bot username at reset: ${username}`);
+    logEvent({ req, route, status: 200, actor: `[DECEPTION:BOT] ${username}` });
+    await tarpit();
+    return NextResponse.json({ ok: true, token: null });
+  }
+
+  // Sequential attack pattern: signup → reset within 8s = bot.
+  if (freshSignupHittingSensitiveRoute(ip)) {
+    flagActor(ipKey, "sequential bot: signup→reset within 8s");
+    logEvent({ req, route, status: 200, actor: `[DECEPTION:SEQ] ${username || "—"}` });
+    await tarpit();
+    return NextResponse.json({ ok: true, token: null });
+  }
 
   // STATELESS: block known attackers.
   if (username && isKnownAttacker(username)) {
