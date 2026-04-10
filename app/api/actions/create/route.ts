@@ -16,42 +16,13 @@ const RATE_WINDOW_MS = 60 * 1000;
 const createAttempts = new Map<string, { count: number; firstAt: number }>();
 
 // POST /api/actions/create
+// Body: { title: string, body: string }
 export async function POST(req: Request) {
   const route = "/api/actions/create";
   const session = sessionFromRequest(req);
   if (!session) {
     logEvent({ req, route, status: 401, actor: null });
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
-  }
-
-  const ip = requestIP(req);
-  const key = requestKey(req, session.identity);
-
-  // Bot swarm detection.
-  if (trackSwarm(ip, session.identity)) {
-    flagActor(ip, "bot swarm: multiple actors from same IP");
-    flagActor(key, `part of bot swarm from ${ip}`);
-    logEvent({ req, route, status: 429, actor: `[SWARM] ${session.identity}` });
-    await tarpit();
-    return NextResponse.json({ error: "too many requests" }, { status: 429 });
-  }
-
-  // Fingerprint: flag suspicious clients.
-  const { score, reasons } = fingerprint(req);
-  if (score >= 40) {
-    flagActor(key, `fingerprint score ${score}: ${reasons.join(", ")}`);
-  }
-
-  // Frequency: flag high-volume callers.
-  if (trackFrequency(key)) {
-    flagActor(key, "high request frequency on create");
-  }
-
-  // Serve deception to flagged traffic — tarpit then return canary token.
-  if (isFlagged(key)) {
-    logEvent({ req, route, status: 201, actor: `[DECEPTION] ${session.identity}` });
-    await tarpit();
-    return NextResponse.json(issueCanary(session.identity), { status: 201 });
   }
 
   // Rate limit per user.
