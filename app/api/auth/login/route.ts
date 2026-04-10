@@ -38,6 +38,13 @@ export async function POST(req: Request) {
     );
   }
 
+  // Reject malformed usernames (e.g. "[DECEPTION] admin", "admin?") early.
+  const USERNAME_FORMAT = /^[a-zA-Z0-9_\-\.]{1,64}$/;
+  if (!USERNAME_FORMAT.test(username)) {
+    logEvent({ req, route, status: 400, actor: null });
+    return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
+  }
+
   const ip = requestIP(req);
   const key = requestKey(req, username);
 

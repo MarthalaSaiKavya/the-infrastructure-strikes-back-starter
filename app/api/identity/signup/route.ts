@@ -41,6 +41,14 @@ export async function POST(req: Request) {
     );
   }
 
+  // Enforce strict username format: alphanumeric, hyphen, underscore, dot only.
+  // Blocks [DECEPTION] spoofing, admin?, and other special-char tricks.
+  const USERNAME_FORMAT = /^[a-zA-Z0-9_\-\.]{1,64}$/;
+  if (!USERNAME_FORMAT.test(username)) {
+    logEvent({ req, route, status: 400, actor: null });
+    return NextResponse.json({ error: "invalid username format" }, { status: 400 });
+  }
+
   // Block reserved / privileged username variants (case-insensitive).
   const RESERVED_NAMES = /^(admin|administrator|system|root|moderator|superuser|sysadmin|support|helpdesk|security|ops|devops|internal|service|daemon|healthcheck|monitoring|next_internal)$/i;
   if (RESERVED_NAMES.test(username)) {
