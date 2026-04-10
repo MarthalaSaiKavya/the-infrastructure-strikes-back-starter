@@ -6,21 +6,19 @@ import {
   signSession,
   verifyPassword,
 } from "@/src/auth";
+import {
+  isKnownAttacker, fingerprint, trackFrequency, flagActor, isFlagged,
+  requestKey, requestIP, tarpit,
+} from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
 
+const LOGIN_RATE_LIMIT = 10;
+const LOGIN_WINDOW_MS = 60 * 1000;
+const loginAttempts = new Map<string, { count: number; firstAt: number }>();
+
 // POST /api/auth/login
-// Body: { username: string, password: string, identity?: string }
-//
-// SEEDED FLAWS:
-//  - "Client-influenced session identity": if the body includes an
-//    `identity` field, we stash it into the session as the display /
-//    ownership handle instead of using the authenticated username.
-//    Downstream checks trust session.identity — so an attacker who
-//    authenticates as themselves can claim any identity they like.
-//  - "No login rate limit": the store has a loginAttempts map for a
-//    counter, but this handler never reads or writes it. Blue teams
-//    should notice the dead hook and wire a real limit.
+// Body: { username: string, password: string }
 export async function POST(req: Request) {
   const route = "/api/auth/login";
   let body: { username?: string; password?: string; identity?: string };
@@ -40,6 +38,46 @@ export async function POST(req: Request) {
     );
   }
 
+  const ip = requestIP(req);
+  const key = requestKey(req, username);
+
+  // STATELESS: block known attack actors immediately.
+  if (isKnownAttacker(username)) {
+    flagActor(key, `known attack actor at login: ${username}`);
+    logEvent({ req, route, status: 401, actor: `[DECEPTION] ${username}` });
+    await tarpit();
+    return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
+  }
+
+  // Fingerprint check.
+  const { score, reasons } = fingerprint(req);
+  if (score >= 40) flagActor(key, `fingerprint ${score}: ${reasons.join(", ")}`);
+
+  // Frequency check on IP for brute-force detection.
+  if (trackFrequency(ip)) {
+    flagActor(ip, "brute-force login from IP");
+    flagActor(key, `brute-force login: ${username}`);
+  }
+
+  if (isFlagged(key) || isFlagged(ip)) {
+    logEvent({ req, route, status: 401, actor: `[DECEPTION] ${username}` });
+    await tarpit();
+    return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
+  }
+
+  // Stateless per-IP rate limit (best-effort on serverless).
+  const now = Date.now();
+  const bucket = loginAttempts.get(ip);
+  if (bucket && now - bucket.firstAt < LOGIN_WINDOW_MS) {
+    if (bucket.count >= LOGIN_RATE_LIMIT) {
+      logEvent({ req, route, status: 429, actor: username });
+      return NextResponse.json({ error: "too many requests" }, { status: 429 });
+    }
+    bucket.count += 1;
+  } else {
+    loginAttempts.set(ip, { count: 1, firstAt: now });
+  }
+
   const store = getStore();
   const userId = store.usersByUsername.get(username);
   const user = userId ? store.users.get(userId) : undefined;
@@ -48,11 +86,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
   }
 
-  // SEEDED FLAW: trust caller-supplied identity field if present.
-  const identity =
-    typeof body.identity === "string" && body.identity.trim()
-      ? body.identity.trim()
-      : user.username;
+  // FIXED: ignore caller-supplied identity field — always use verified username.
+  const identity = user.username;
 
   const token = signSession({
     userId: user.id,

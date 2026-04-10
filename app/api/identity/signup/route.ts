@@ -3,17 +3,19 @@ import { randomBytes } from "node:crypto";
 import { logEvent } from "@/lib/telemetry";
 import { getStore } from "@/lib/store";
 import { hashPassword } from "@/src/auth";
+import {
+  isKnownAttacker, fingerprint, trackFrequency, flagActor, isFlagged,
+  requestKey, requestIP, tarpit,
+} from "@/src/api/sentinel";
 
 export const dynamic = "force-dynamic";
 
+const SIGNUP_RATE_LIMIT = 5;
+const SIGNUP_WINDOW_MS = 60 * 1000;
+const signupAttempts = new Map<string, { count: number; firstAt: number }>();
+
 // POST /api/identity/signup
 // Body: { username: string, password: string, email?: string, displayName?: string }
-//
-// SEEDED FLAW: "Unrestricted signup".
-// No rate limit, no password strength check, no disposable-email
-// detection, no CAPTCHA. The only check is uniqueness of username.
-// A script can create arbitrary accounts. Blue teams should add limits
-// and validation.
 export async function POST(req: Request) {
   const route = "/api/identity/signup";
   let body: {
@@ -37,6 +39,46 @@ export async function POST(req: Request) {
       { error: "username and password required" },
       { status: 400 },
     );
+  }
+
+  const ip = requestIP(req);
+  const key = requestKey(req, username);
+
+  // STATELESS: block known attack actor usernames immediately.
+  if (isKnownAttacker(username)) {
+    flagActor(key, `known attack actor at signup: ${username}`);
+    logEvent({ req, route, status: 201, actor: `[DECEPTION] ${username}` });
+    await tarpit();
+    return NextResponse.json({ ok: true, id: "usr_" + randomBytes(6).toString("hex"), username, displayName: username });
+  }
+
+  // Fingerprint check.
+  const { score, reasons } = fingerprint(req);
+  if (score >= 40) flagActor(key, `fingerprint ${score}: ${reasons.join(", ")}`);
+
+  // Frequency check — mass account creation detection.
+  if (trackFrequency(ip)) {
+    flagActor(ip, "mass signup from IP");
+    flagActor(key, `mass signup: ${username}`);
+  }
+
+  if (isFlagged(key) || isFlagged(ip)) {
+    logEvent({ req, route, status: 201, actor: `[DECEPTION] ${username}` });
+    await tarpit();
+    return NextResponse.json({ ok: true, id: "usr_" + randomBytes(6).toString("hex"), username, displayName: username });
+  }
+
+  // Per-IP rate limit (best-effort on serverless).
+  const now = Date.now();
+  const bucket = signupAttempts.get(ip);
+  if (bucket && now - bucket.firstAt < SIGNUP_WINDOW_MS) {
+    if (bucket.count >= SIGNUP_RATE_LIMIT) {
+      logEvent({ req, route, status: 429, actor: username });
+      return NextResponse.json({ error: "too many requests" }, { status: 429 });
+    }
+    bucket.count += 1;
+  } else {
+    signupAttempts.set(ip, { count: 1, firstAt: now });
   }
 
   const store = getStore();

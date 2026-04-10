@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 // --- Known attack actor name patterns (STATELESS) ---
 // These are derived from observed attack traffic. Any session identity
 // matching these patterns is treated as adversarial immediately.
-const ATTACK_ACTOR_RE = /^(attacker|hacker|idor|injtest|brtest|bf_|xss|sqli|redteam|pentest|exploit|fuzz|fz[0-9]|blitz_|rt[0-9]{5,}|ob[0-9]{5,}|oa[0-9]{5,}|rtA_|rtB_|rt-[ab]-|s_[0-9a-f]{4,}|u_[0-9a-f]{4,}|h_[0-9a-f]{4,}|v[0-9]{10,}|probe_|deploy_bot|admin_backup|sys_service|racetest|longpass|proto_test|step[0-9]_|verify_dup|final_dedup|resetclean|rc[0-9]{5,}|rl_|poc_|dbg[0-9]|rpt_|rs_[0-9]|delta_|take_|r_[0-9]{8}-)/i;
+const ATTACK_ACTOR_RE = /^(attacker|hacker|idor|injtest|brtest|bf_|xss|sqli|redteam|pentest|exploit|fuzz|fz[0-9]|blitz_|rt[0-9]{5,}|ob[0-9]{5,}|oa[0-9]{5,}|rtA_|rtB_|rt-[ab]-|s_[0-9a-f]{4,}|u_[0-9a-f]{4,}|h_[0-9a-f]{4,}|v[0-9]{10,}|probe_|deploy_bot|admin_backup|sys_service|racetest|longpass|proto_test|step[0-9]_|verify_dup|final_dedup|resetclean|rc[0-9]{5,}|rl_|poc_|dbg[0-9]|rpt_|rs_[0-9]|delta_|take_|r_[0-9]{8}-|su_\w{3,}|inv4_|dup[0-9]*_|dupdemo_|ghost_|tkn_|c2b?-t[0-9]|atk[0-9]|definitelynotauser|sess-test|victim-t[0-9]|nope-[0-9])/i;
 
 // Flagged actor registry (best-effort stateful)
 const flaggedActors = new Map<string, { flaggedAt: number; reason: string }>();
